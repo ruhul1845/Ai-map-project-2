@@ -13,6 +13,8 @@ export default function App() {
     useDegree: true,
     useLCV: true,
     useForwardChecking: true,
+    useMAC: false,
+    useBackjumping: false,
     useLocalSearch: false,
     userCount: 24,
     stationCount: 8,
@@ -99,7 +101,7 @@ export default function App() {
               <p><strong>Domains:</strong> legal fuel station choices for each user after capacity, time, distance, current fuel, and route checks.</p>
               <p><strong>Node consistency:</strong> removes individually invalid station values before search.</p>
               <p><strong>Arc consistency / AC-3:</strong> removes unsupported values when users compete for the same limited station capacity.</p>
-              <p><strong>Heuristics:</strong> MRV selects the most constrained user, Degree breaks ties, LCV chooses the least damaging station value, Forward Checking prunes future domains, and Local Search improves the COP result when complete satisfaction is hard.</p>
+              <p><strong>Heuristics:</strong> MRV selects the most constrained user, Degree breaks ties, LCV chooses the least damaging station value, Forward Checking prunes future domains, MAC maintains arc consistency after each assignment, Backjumping jumps to the real conflict variable, and Local Search improves the COP result when complete satisfaction is hard.</p>
             </div>
           </article>
 
@@ -164,6 +166,14 @@ function ResultsDashboard({ solution, comparisonRows, selectedUserId, setSelecte
     ['Backtracks', solution.metrics.backtracks],
     ['Forward checking runs', solution.metrics.forwardCheckingRuns],
     ['Forward checking pruned', solution.metrics.prunedByForwardChecking],
+    ['MAC runs', solution.metrics.macRuns],
+    ['MAC arc checks', solution.metrics.macArcChecks],
+    ['MAC removed values', solution.metrics.macRemoved],
+    ['MAC failures', solution.metrics.macFailures],
+    ['Backjump checks', solution.metrics.backjumpChecks],
+    ['Backjumps', solution.metrics.backjumps],
+    ['Backjump pruned branches', solution.metrics.backjumpPrunedBranches],
+    ['Conflict set total', solution.metrics.conflictSetSizeTotal],
     ['Local search steps', solution.metrics.localSearchSteps],
     ['Local improvements', solution.metrics.localSearchImprovements],
     ['Runtime', `${solution.metrics.runtimeMs} ms`],
@@ -190,7 +200,7 @@ function ResultsDashboard({ solution, comparisonRows, selectedUserId, setSelecte
       <article className="rounded-3xl border border-slate-200 bg-white p-6 shadow-soft">
         <h2 className="mb-4 text-xl font-bold">Comparison Table: Algorithm / Heuristic Effect</h2>
         <div className="overflow-auto rounded-2xl border border-slate-100">
-          <table className="min-w-[1050px] text-left text-sm">
+          <table className="min-w-[1320px] text-left text-sm">
             <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-4 py-3">Method</th>
@@ -203,6 +213,10 @@ function ResultsDashboard({ solution, comparisonRows, selectedUserId, setSelecte
                 <th className="px-4 py-3">Tried</th>
                 <th className="px-4 py-3">AC-3 Removed</th>
                 <th className="px-4 py-3">Forward Pruned</th>
+                <th className="px-4 py-3">MAC Removed</th>
+                <th className="px-4 py-3">MAC Checks</th>
+                <th className="px-4 py-3">Backjumps</th>
+                <th className="px-4 py-3">BJ Pruned</th>
                 <th className="px-4 py-3">Local Steps</th>
                 <th className="px-4 py-3">Domain ↓</th>
                 <th className="px-4 py-3">Runtime</th>
@@ -221,6 +235,10 @@ function ResultsDashboard({ solution, comparisonRows, selectedUserId, setSelecte
                   <td className="px-4 py-3 text-slate-600">{row.tried}</td>
                   <td className="px-4 py-3 text-slate-600">{row.ac3Removed}</td>
                   <td className="px-4 py-3 text-slate-600">{row.forwardPruned}</td>
+                  <td className="px-4 py-3 text-slate-600">{row.macRemoved}</td>
+                  <td className="px-4 py-3 text-slate-600">{row.macArcChecks}</td>
+                  <td className="px-4 py-3 text-slate-600">{row.backjumps}</td>
+                  <td className="px-4 py-3 text-slate-600">{row.backjumpPrunedBranches}</td>
                   <td className="px-4 py-3 text-slate-600">{row.localSteps}</td>
                   <td className="px-4 py-3 text-slate-600">{row.domainReductionPercent}%</td>
                   <td className="px-4 py-3 text-slate-600">{row.runtimeMs} ms</td>

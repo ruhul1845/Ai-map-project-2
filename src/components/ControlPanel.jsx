@@ -3,7 +3,16 @@ import { stationPool, userPool } from '../data'
 
 export default function ControlPanel({ options, setOptions }) {
   function toggle(key) {
-    setOptions((prev) => ({ ...prev, [key]: !prev[key] }))
+    setOptions((prev) => {
+      const nextValue = !prev[key]
+      if (key === 'useMAC' && nextValue) {
+        return { ...prev, useMAC: true, useForwardChecking: false }
+      }
+      if (key === 'useForwardChecking' && nextValue) {
+        return { ...prev, useForwardChecking: true, useMAC: false }
+      }
+      return { ...prev, [key]: nextValue }
+    })
   }
 
   function setNumber(key, value) {
@@ -40,6 +49,8 @@ export default function ControlPanel({ options, setOptions }) {
           <Toggle label="Degree Heuristic tie-breaker" checked={options.useDegree} onChange={() => toggle('useDegree')} />
           <Toggle label="LCV / Least Constraining Value" checked={options.useLCV} onChange={() => toggle('useLCV')} />
           <Toggle label="Forward Checking" checked={options.useForwardChecking} onChange={() => toggle('useForwardChecking')} />
+          <Toggle label="MAC / Maintain Arc Consistency" checked={options.useMAC} onChange={() => toggle('useMAC')} />
+          <Toggle label="Backjumping / conflict-directed backtracking" checked={options.useBackjumping} onChange={() => toggle('useBackjumping')} />
           <Toggle label="Local Search / Min-conflict COP" checked={options.useLocalSearch} onChange={() => toggle('useLocalSearch')} />
         </div>
         <div className="mt-4 rounded-2xl bg-indigo-50 p-4 text-xs leading-5 text-indigo-900">
@@ -57,7 +68,8 @@ export default function ControlPanel({ options, setOptions }) {
           <p><span className="font-semibold">Variable ordering:</span> {options.useMRV ? 'MRV enabled' : 'Static priority order'}</p>
           <p><span className="font-semibold">Tie-breaker:</span> {options.useDegree ? 'Degree heuristic' : 'Priority/demand order'}</p>
           <p><span className="font-semibold">Value ordering:</span> {options.useLCV ? 'LCV enabled' : 'Score order'}</p>
-          <p><span className="font-semibold">Inference during search:</span> {options.useForwardChecking ? 'Forward checking enabled' : 'No forward checking'}</p>
+          <p><span className="font-semibold">Inference during search:</span> {options.useMAC ? 'MAC enabled' : options.useForwardChecking ? 'Forward checking enabled' : 'No inference during search'}</p>
+          <p><span className="font-semibold">Backtracking improvement:</span> {options.useBackjumping ? 'Backjumping enabled' : 'Chronological backtracking'}</p>
           <p><span className="font-semibold">COP improvement:</span> {options.useLocalSearch ? 'Local search enabled' : 'Backtracking/COP only'}</p>
         </div>
       </section>

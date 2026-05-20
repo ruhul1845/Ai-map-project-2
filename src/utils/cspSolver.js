@@ -13,10 +13,6 @@ function baseLegalStatus(user, station, route) {
   return { ok: true, reason: 'Legal' }
 }
 
-function isLegal(user, station, route) {
-  return baseLegalStatus(user, station, route).ok
-}
-
 function valueScore(user, station, route) {
   const priorityBenefit = user.priority * 18
   const distancePenalty = route.distance * 3
@@ -113,6 +109,8 @@ export function solveCSP(options = {}, scenario = buildScenario(options)) {
     useDegree = true,
     useLCV = true,
     useForwardChecking = true,
+    useMAC = false,
+    useBackjumping = false,
     useLocalSearch = false,
     maxSearchCalls = 4500
   } = options
@@ -133,6 +131,14 @@ export function solveCSP(options = {}, scenario = buildScenario(options)) {
     consistencyChecks: 0,
     prunedByForwardChecking: 0,
     forwardCheckingRuns: 0,
+    macRuns: 0,
+    macArcChecks: 0,
+    macRemoved: 0,
+    macFailures: 0,
+    backjumpChecks: 0,
+    backjumps: 0,
+    backjumpPrunedBranches: 0,
+    conflictSetSizeTotal: 0,
     ac3Removed: ac3Result.removed,
     ac3ArcChecks: ac3Result.arcChecks,
     nodeConsistencyRemoved,
@@ -146,7 +152,7 @@ export function solveCSP(options = {}, scenario = buildScenario(options)) {
     localSearchConflicts: 0,
     runtimeMs: 0,
     reasonCounts: built.reasonCounts,
-    algorithmLabel: solverLabel({ useAC3, useMRV, useDegree, useLCV, useForwardChecking, useLocalSearch })
+    algorithmLabel: solverLabel({ useAC3, useMRV, useDegree, useLCV, useForwardChecking, useMAC, useBackjumping, useLocalSearch })
   }
 
   metrics.domainReductionPercent = fullDomainSize
@@ -170,19 +176,26 @@ export function solveCSP(options = {}, scenario = buildScenario(options)) {
     domains,
     emptyUsage(scenario),
     metrics,
-    { useMRV, useDegree, useLCV, useForwardChecking, maxSearchCalls },
+    { useMRV, useDegree, useLCV, useForwardChecking, useMAC, useBackjumping, maxSearchCalls },
     scenario,
     best
   )
 
   metrics.runtimeMs = Number((performance.now() - startTime).toFixed(2))
-  return summarizeSolution(best.assignment, domains, metrics, { useAC3, useMRV, useDegree, useLCV, useForwardChecking, useLocalSearch }, scenario, astar.nodesById)
+  return summarizeSolution(
+    best.assignment,
+    domains,
+    metrics,
+    { useAC3, useMRV, useDegree, useLCV, useForwardChecking, useMAC, useBackjumping, useLocalSearch },
+    scenario,
+    astar.nodesById
+  )
 }
 
 function backtrack(assignment, domains, stationUsage, metrics, options, scenario, best) {
   if (metrics.calls >= options.maxSearchCalls) {
     metrics.stoppedByLimit = true
-    return
+    return { status: 'limit' }
   }
 
   metrics.calls += 1
@@ -193,22 +206,57 @@ function backtrack(assignment, domains, stationUsage, metrics, options, scenario
   }
 
   const variable = selectUnassignedVariable(assignment, domains, options, scenario)
-  if (!variable) return
+  if (!variable) return { status: 'complete' }
 
   const orderedValues = orderDomainValues(variable, domains, assignment, stationUsage, options, scenario)
+  const conflictSet = new Set()
+  let triedLegalValue = false
 
   for (const value of orderedValues) {
     metrics.assignmentsTried += 1
     metrics.consistencyChecks += 1
-    if (!isConsistent(variable, value, stationUsage, scenario)) continue
 
+    const consistency = consistencyResult(variable, value, stationUsage, assignment, scenario)
+    if (!consistency.ok) {
+      addConflicts(conflictSet, consistency.conflicts)
+      continue
+    }
+
+    triedLegalValue = true
     const nextAssignment = { ...assignment, [variable.id]: value }
-    const nextUsage = { ...stationUsage, [value.stationId]: stationUsage[value.stationId] + variable.demand }
-    const nextDomains = options.useForwardChecking
-      ? forwardCheck(variable, value, domains, assignment, nextUsage, metrics, scenario)
-      : domains
+    const nextUsage = { ...stationUsage, [value.stationId]: (stationUsage[value.stationId] || 0) + variable.demand }
+    let nextDomains = domains
 
-    backtrack(nextAssignment, nextDomains, nextUsage, metrics, options, scenario, best)
+    if (options.useMAC) {
+      nextDomains = maintainArcConsistency(variable, domains, nextAssignment, nextUsage, metrics, scenario)
+      if (!nextDomains) {
+        addConflicts(conflictSet, recentUsersUsingStation(value.stationId, assignment, scenario))
+        metrics.backtracks += 1
+        continue
+      }
+    } else if (options.useForwardChecking) {
+      nextDomains = forwardCheck(variable, value, domains, assignment, nextUsage, metrics, scenario)
+    }
+
+    const result = backtrack(nextAssignment, nextDomains, nextUsage, metrics, options, scenario, best)
+
+    if (result?.jumpTo && result.jumpTo !== variable.id) {
+      return result
+    }
+  }
+
+  // Backjumping: if all useful values failed because of earlier assignments,
+  // jump directly to the most recent culprit instead of chronologically backing up one level.
+  if (options.useBackjumping && conflictSet.size > 0 && (!triedLegalValue || orderedValues.length > 0)) {
+    metrics.backjumpChecks += 1
+    const target = mostRecentConflict(conflictSet, assignment)
+    metrics.conflictSetSizeTotal += conflictSet.size
+    if (target && target !== variable.id) {
+      metrics.backjumps += 1
+      metrics.backjumpPrunedBranches += Math.max(1, orderedValues.length)
+      metrics.backtracks += 1
+      return { status: 'backjump', jumpTo: target }
+    }
   }
 
   // COP relaxation: user may remain unsatisfied if no legal allocation is possible.
@@ -219,6 +267,7 @@ function backtrack(assignment, domains, stationUsage, metrics, options, scenario
     best.score = skipScore
   }
   metrics.backtracks += 1
+  return { status: 'backtrack' }
 }
 
 function selectUnassignedVariable(assignment, domains, options, scenario) {
@@ -254,13 +303,13 @@ function orderDomainValues(user, domains, assignment, stationUsage, options, sce
 
 function lcvCost(value, user, domains, assignment, stationUsage, scenario) {
   let removed = 0
-  const projectedUsage = { ...stationUsage, [value.stationId]: stationUsage[value.stationId] + user.demand }
+  const projectedUsage = { ...stationUsage, [value.stationId]: (stationUsage[value.stationId] || 0) + user.demand }
 
   for (const other of scenario.users) {
     if (other.id === user.id || other.id in assignment) continue
     for (const otherValue of domains[other.id] || []) {
       const station = scenario.stations.find((s) => s.id === otherValue.stationId)
-      if (projectedUsage[otherValue.stationId] + other.demand > station.capacity) removed += 1
+      if (station && (projectedUsage[otherValue.stationId] || 0) + other.demand > station.capacity) removed += 1
     }
   }
 
@@ -268,8 +317,18 @@ function lcvCost(value, user, domains, assignment, stationUsage, scenario) {
 }
 
 function isConsistent(user, value, stationUsage, scenario) {
+  return consistencyResult(user, value, stationUsage, {}, scenario).ok
+}
+
+function consistencyResult(user, value, stationUsage, assignment, scenario) {
   const station = scenario.stations.find((s) => s.id === value.stationId)
-  return station && stationUsage[value.stationId] + user.demand <= station.capacity
+  if (!station) return { ok: false, conflicts: [] }
+  const projected = (stationUsage[value.stationId] || 0) + user.demand
+  if (projected <= station.capacity) return { ok: true, conflicts: [] }
+  return {
+    ok: false,
+    conflicts: recentUsersUsingStation(value.stationId, assignment, scenario)
+  }
 }
 
 function forwardCheck(user, value, domains, assignment, nextUsage, metrics, scenario) {
@@ -280,11 +339,103 @@ function forwardCheck(user, value, domains, assignment, nextUsage, metrics, scen
     const before = next[other.id].length
     next[other.id] = next[other.id].filter((otherValue) => {
       const station = scenario.stations.find((s) => s.id === otherValue.stationId)
-      return station && nextUsage[otherValue.stationId] + other.demand <= station.capacity
+      return station && (nextUsage[otherValue.stationId] || 0) + other.demand <= station.capacity
     })
     metrics.prunedByForwardChecking += Math.max(0, before - next[other.id].length)
   }
   return next
+}
+
+function maintainArcConsistency(assignedUser, domains, assignment, stationUsage, metrics, scenario) {
+  metrics.macRuns += 1
+  const nextDomains = cloneDomains(domains)
+  const queue = []
+
+  for (const user of scenario.users) {
+    if (user.id !== assignedUser.id && !(user.id in assignment)) {
+      queue.push([user.id, assignedUser.id])
+    }
+  }
+
+  while (queue.length > 0) {
+    const [xiId, xjId] = queue.shift()
+    metrics.macArcChecks += 1
+    const before = nextDomains[xiId]?.length || 0
+
+    nextDomains[xiId] = (nextDomains[xiId] || []).filter((xiValue) =>
+      macHasSupport(xiId, xiValue, xjId, nextDomains, assignment, stationUsage, scenario)
+    )
+
+    const after = nextDomains[xiId]?.length || 0
+    const removed = before - after
+
+    if (removed > 0) {
+      metrics.macRemoved += removed
+      if (after === 0) {
+        metrics.macFailures += 1
+        return null
+      }
+
+      for (const xk of scenario.users) {
+        if (xk.id !== xiId && xk.id !== xjId && !(xk.id in assignment)) {
+          queue.push([xk.id, xiId])
+        }
+      }
+    }
+  }
+
+  return nextDomains
+}
+
+function macHasSupport(xiId, xiValue, xjId, domains, assignment, stationUsage, scenario) {
+  const xi = scenario.users.find((u) => u.id === xiId)
+  const xj = scenario.users.find((u) => u.id === xjId)
+  const station = scenario.stations.find((s) => s.id === xiValue.stationId)
+  if (!xi || !xj || !station) return false
+
+  const currentUsed = stationUsage[xiValue.stationId] || 0
+  if (currentUsed + xi.demand > station.capacity) return false
+
+  if (xjId in assignment) {
+    const assignedValue = assignment[xjId]
+    if (!assignedValue) return true
+    if (assignedValue.stationId !== xiValue.stationId) return true
+    return currentUsed + xi.demand <= station.capacity
+  }
+
+  const xjDomain = domains[xjId] || []
+  if (xjDomain.length === 0) return false
+
+  return xjDomain.some((xjValue) => {
+    const xjStation = scenario.stations.find((s) => s.id === xjValue.stationId)
+    if (!xjStation) return false
+
+    if (xjValue.stationId !== xiValue.stationId) {
+      const usedForXjStation = stationUsage[xjValue.stationId] || 0
+      return usedForXjStation + xj.demand <= xjStation.capacity
+    }
+
+    return currentUsed + xi.demand + xj.demand <= station.capacity
+  })
+}
+
+function recentUsersUsingStation(stationId, assignment, scenario) {
+  return Object.entries(assignment)
+    .filter(([, value]) => value?.stationId === stationId)
+    .map(([userId]) => scenario.users.find((user) => user.id === userId))
+    .filter(Boolean)
+}
+
+function addConflicts(conflictSet, conflicts) {
+  for (const user of conflicts || []) conflictSet.add(user.id)
+}
+
+function mostRecentConflict(conflictSet, assignment) {
+  const assignedOrder = Object.keys(assignment)
+  for (let i = assignedOrder.length - 1; i >= 0; i -= 1) {
+    if (conflictSet.has(assignedOrder[i])) return assignedOrder[i]
+  }
+  return null
 }
 
 function greedyCOP(domains, scenario, options = {}) {
@@ -497,7 +648,9 @@ function solverLabel(options) {
   if (options.useMRV) active.push('MRV')
   if (options.useDegree) active.push('Degree')
   if (options.useLCV) active.push('LCV')
-  if (options.useForwardChecking) active.push('Forward checking')
+  if (options.useForwardChecking && !options.useMAC) active.push('Forward checking')
+  if (options.useMAC) active.push('MAC')
+  if (options.useBackjumping) active.push('Backjumping')
   if (options.useLocalSearch) active.push('Local search')
   return active.length ? active.join(' + ') : 'Plain backtracking'
 }
@@ -511,27 +664,39 @@ export function compareSolverVariants(baseOptions = {}, scenario = buildScenario
   const variants = [
     {
       name: 'Plain backtracking',
-      options: { ...shared, useAC3: false, useMRV: false, useDegree: false, useLCV: false, useForwardChecking: false, useLocalSearch: false }
+      options: { ...shared, useAC3: false, useMRV: false, useDegree: false, useLCV: false, useForwardChecking: false, useMAC: false, useBackjumping: false, useLocalSearch: false }
     },
     {
       name: 'Backtracking + AC-3',
-      options: { ...shared, useAC3: true, useMRV: false, useDegree: false, useLCV: false, useForwardChecking: false, useLocalSearch: false }
+      options: { ...shared, useAC3: true, useMRV: false, useDegree: false, useLCV: false, useForwardChecking: false, useMAC: false, useBackjumping: false, useLocalSearch: false }
     },
     {
       name: 'AC-3 + MRV + Degree',
-      options: { ...shared, useAC3: true, useMRV: true, useDegree: true, useLCV: false, useForwardChecking: false, useLocalSearch: false }
+      options: { ...shared, useAC3: true, useMRV: true, useDegree: true, useLCV: false, useForwardChecking: false, useMAC: false, useBackjumping: false, useLocalSearch: false }
     },
     {
       name: 'AC-3 + MRV + Degree + LCV',
-      options: { ...shared, useAC3: true, useMRV: true, useDegree: true, useLCV: true, useForwardChecking: false, useLocalSearch: false }
+      options: { ...shared, useAC3: true, useMRV: true, useDegree: true, useLCV: true, useForwardChecking: false, useMAC: false, useBackjumping: false, useLocalSearch: false }
     },
     {
       name: 'Full CSP with Forward Checking',
-      options: { ...shared, useAC3: true, useMRV: true, useDegree: true, useLCV: true, useForwardChecking: true, useLocalSearch: false }
+      options: { ...shared, useAC3: true, useMRV: true, useDegree: true, useLCV: true, useForwardChecking: true, useMAC: false, useBackjumping: false, useLocalSearch: false }
+    },
+    {
+      name: 'Full CSP with MAC',
+      options: { ...shared, useAC3: true, useMRV: true, useDegree: true, useLCV: true, useForwardChecking: false, useMAC: true, useBackjumping: false, useLocalSearch: false }
+    },
+    {
+      name: 'Full CSP with Backjumping',
+      options: { ...shared, useAC3: true, useMRV: true, useDegree: true, useLCV: true, useForwardChecking: true, useMAC: false, useBackjumping: true, useLocalSearch: false }
+    },
+    {
+      name: 'MAC + Backjumping',
+      options: { ...shared, useAC3: true, useMRV: true, useDegree: true, useLCV: true, useForwardChecking: false, useMAC: true, useBackjumping: true, useLocalSearch: false }
     },
     {
       name: 'Full CSP + Local Search COP',
-      options: { ...shared, useAC3: true, useMRV: true, useDegree: true, useLCV: true, useForwardChecking: true, useLocalSearch: true }
+      options: { ...shared, useAC3: true, useMRV: true, useDegree: true, useLCV: true, useForwardChecking: true, useMAC: false, useBackjumping: false, useLocalSearch: true }
     }
   ]
 
@@ -551,6 +716,10 @@ export function compareSolverVariants(baseOptions = {}, scenario = buildScenario
       tried: result.metrics.assignmentsTried,
       ac3Removed: result.metrics.ac3Removed,
       forwardPruned: result.metrics.prunedByForwardChecking,
+      macRemoved: result.metrics.macRemoved,
+      macArcChecks: result.metrics.macArcChecks,
+      backjumps: result.metrics.backjumps,
+      backjumpPrunedBranches: result.metrics.backjumpPrunedBranches,
       localSteps: result.metrics.localSearchSteps,
       runtimeMs: result.metrics.runtimeMs,
       domainReductionPercent: result.metrics.domainReductionPercent,

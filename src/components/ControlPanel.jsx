@@ -1,9 +1,7 @@
-import { BrainCircuit, Route, Settings2, SlidersHorizontal } from 'lucide-react'
+import { BrainCircuit, Settings2, SlidersHorizontal } from 'lucide-react'
 import { stationPool, userPool } from '../data'
 
-export default function ControlPanel({ options, setOptions, solution, selectedUserId, setSelectedUserId }) {
-  const selectedRow = solution.rows.find((row) => row.userId === selectedUserId) || solution.rows[0]
-
+export default function ControlPanel({ options, setOptions }) {
   function toggle(key) {
     setOptions((prev) => ({ ...prev, [key]: !prev[key] }))
   }
@@ -27,6 +25,7 @@ export default function ControlPanel({ options, setOptions, solution, selectedUs
           <Slider label="Manual distance tolerance boost" value={options.maxDistanceBoost} min={0} max={8} step={1} suffix=" km" onChange={(v) => setNumber('maxDistanceBoost', v)} />
           <Slider label="Current fuel level" value={options.currentFuelScale} min={25} max={200} step={5} suffix="%" onChange={(v) => setNumber('currentFuelScale', v)} />
           <Slider label="Fuel safety reserve" value={options.reserveDistance} min={0} max={5} step={0.5} suffix=" km" onChange={(v) => setNumber('reserveDistance', v)} />
+          <Slider label="Search safety limit" value={options.maxSearchCalls} min={500} max={8000} step={500} suffix=" calls" onChange={(v) => setNumber('maxSearchCalls', v)} />
         </div>
       </section>
 
@@ -40,64 +39,28 @@ export default function ControlPanel({ options, setOptions, solution, selectedUs
           <Toggle label="MRV / Most Constrained Variable" checked={options.useMRV} onChange={() => toggle('useMRV')} />
           <Toggle label="Degree Heuristic tie-breaker" checked={options.useDegree} onChange={() => toggle('useDegree')} />
           <Toggle label="LCV / Least Constraining Value" checked={options.useLCV} onChange={() => toggle('useLCV')} />
+          <Toggle label="Forward Checking" checked={options.useForwardChecking} onChange={() => toggle('useForwardChecking')} />
+          <Toggle label="Local Search / Min-conflict COP" checked={options.useLocalSearch} onChange={() => toggle('useLocalSearch')} />
         </div>
-      </section>
-
-      <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-soft">
-        <div className="mb-3 flex items-center gap-2">
-          <Route className="h-5 w-5 text-indigo-600" />
-          <h2 className="text-lg font-bold text-slate-900">A* Route Search</h2>
+        <div className="mt-4 rounded-2xl bg-indigo-50 p-4 text-xs leading-5 text-indigo-900">
+          Turning these controls on/off immediately changes the assignment result, domain pruning, search calls, backtracks, runtime, and comparison metrics below the map.
         </div>
-        <select
-          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm outline-none focus:border-indigo-500"
-          value={selectedRow?.userId || ''}
-          onChange={(event) => setSelectedUserId(event.target.value)}
-        >
-          {solution.rows.map((row) => (
-            <option key={row.userId} value={row.userId}>{row.userName} → {row.stationArea}</option>
-          ))}
-        </select>
-        {selectedRow ? (
-          <div className="mt-4 rounded-2xl bg-slate-50 p-4 text-sm text-slate-700">
-            <p><span className="font-semibold">Path:</span> {selectedRow.pathNames.join(' → ')}</p>
-            <p><span className="font-semibold">Distance:</span> {selectedRow.distance} km</p>
-            <p><span className="font-semibold">Vehicle:</span> {selectedRow.vehicleType}</p>
-            <p><span className="font-semibold">Current fuel:</span> {selectedRow.currentFuel} L · {selectedRow.kmPerLiter} km/L</p>
-            <p><span className="font-semibold">Allowed range:</span> {selectedRow.maxDistance} km ({selectedRow.distanceMode === 'fuelBased' ? 'fuel-based' : 'manual tolerance'})</p>
-            <p><span className="font-semibold">A* nodes expanded:</span> {selectedRow.nodesExpanded}</p>
-            <p><span className="font-semibold">Heuristic:</span> h(n) = straight-line distance to station</p>
-          </div>
-        ) : (
-          <div className="mt-4 rounded-2xl bg-rose-50 p-4 text-sm text-rose-700">No user is currently assigned. Increase fuel supply or distance tolerance.</div>
-        )}
       </section>
 
       <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-soft">
         <div className="mb-3 flex items-center gap-2">
           <BrainCircuit className="h-5 w-5 text-indigo-600" />
-          <h2 className="text-lg font-bold text-slate-900">Solver Metrics</h2>
+          <h2 className="text-lg font-bold text-slate-900">Active Solver</h2>
         </div>
-        <div className="grid grid-cols-2 gap-3 text-sm">
-          <SmallMetric label="Calls" value={solution.metrics.calls} />
-          <SmallMetric label="Backtracks" value={solution.metrics.backtracks} />
-          <SmallMetric label="Tried" value={solution.metrics.assignmentsTried} />
-          <SmallMetric label="Forward pruned" value={solution.metrics.prunedByForwardChecking} />
-          <SmallMetric label="AC-3 removed" value={solution.metrics.ac3Removed} />
-          <SmallMetric label="Domains" value={`${solution.metrics.revisedDomainSize}/${solution.metrics.rawDomainSize}`} />
+        <div className="space-y-2 text-sm text-slate-700">
+          <p><span className="font-semibold">AC-3:</span> {options.useAC3 ? 'On' : 'Off'}</p>
+          <p><span className="font-semibold">Variable ordering:</span> {options.useMRV ? 'MRV enabled' : 'Static priority order'}</p>
+          <p><span className="font-semibold">Tie-breaker:</span> {options.useDegree ? 'Degree heuristic' : 'Priority/demand order'}</p>
+          <p><span className="font-semibold">Value ordering:</span> {options.useLCV ? 'LCV enabled' : 'Score order'}</p>
+          <p><span className="font-semibold">Inference during search:</span> {options.useForwardChecking ? 'Forward checking enabled' : 'No forward checking'}</p>
+          <p><span className="font-semibold">COP improvement:</span> {options.useLocalSearch ? 'Local search enabled' : 'Backtracking/COP only'}</p>
         </div>
-        {solution.metrics.stoppedByLimit && <p className="mt-3 rounded-2xl bg-amber-50 p-3 text-xs text-amber-700">Search reached the safety limit, so the displayed answer is the best COP solution found so far.</p>}
       </section>
-
-      {solution.unassignedUsers.length > 0 && (
-        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-soft">
-          <h2 className="mb-3 text-lg font-bold text-slate-900">Unsatisfied Users</h2>
-          <div className="max-h-40 space-y-2 overflow-auto text-sm text-slate-600">
-            {solution.unassignedUsers.map((user) => (
-              <p key={user.id} className="rounded-2xl bg-slate-50 px-3 py-2">{user.name} · {user.area} · legal options: {user.legalOptions}</p>
-            ))}
-          </div>
-        </section>
-      )}
     </aside>
   )
 }
@@ -143,18 +106,9 @@ function DistanceModeSelector({ value, onChange }) {
 
 function Toggle({ label, checked, onChange }) {
   return (
-    <label className="flex cursor-pointer items-center justify-between rounded-2xl bg-slate-50 px-4 py-3 text-sm font-medium text-slate-700">
+    <label className={`flex cursor-pointer items-center justify-between rounded-2xl px-4 py-3 text-sm font-medium transition ${checked ? 'bg-indigo-50 text-indigo-900 ring-1 ring-indigo-200' : 'bg-slate-50 text-slate-700'}`}>
       <span>{label}</span>
       <input type="checkbox" className="h-5 w-5 accent-indigo-600" checked={checked} onChange={onChange} />
     </label>
-  )
-}
-
-function SmallMetric({ label, value }) {
-  return (
-    <div className="rounded-2xl bg-slate-50 p-3">
-      <p className="text-xs uppercase tracking-wide text-slate-400">{label}</p>
-      <p className="text-xl font-bold text-slate-900">{value}</p>
-    </div>
   )
 }
